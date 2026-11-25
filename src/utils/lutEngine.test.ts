@@ -12,7 +12,68 @@ import {
   generateLightroomInstallerScript,
   bakeXMPParamsTo3DLUT,
   parseLightroomXMPString,
+  parseAnyLUTFile,
 } from './lutEngine';
+
+test('uploading 1st and 2nd LUTs with empty TITLE "" or identical generic TITLE headers produces distinct LUT IDs, distinct titles, and distinct Lightroom XMP crs:UUIDs', () => {
+  const firstCube = `
+TITLE ""
+LUT_3D_SIZE 2
+0.02 0.01 0.00
+0.98 0.05 0.02
+0.02 0.96 0.04
+1.00 0.98 0.06
+0.01 0.04 0.90
+0.95 0.09 0.92
+0.05 0.94 0.95
+1.00 0.99 0.94
+`;
+
+  const secondCubeWithShaperAndSameHeader = `
+# DaVinci Resolve Export with 1D Shaper + 3D LUT and identical empty TITLE
+TITLE ""
+LUT_1D_SIZE 2
+LUT_3D_SIZE 2
+0.0 0.0 0.0
+1.0 1.0 1.0
+0.00 0.05 0.12
+0.90 0.08 0.15
+0.04 0.88 0.14
+0.92 0.91 0.18
+0.02 0.10 0.96
+0.88 0.14 0.98
+0.08 0.92 0.99
+0.94 0.95 1.00
+`;
+
+  const lut1 = parseAnyLUTFile(firstCube, 'Warm_Golden_Film_01.cube');
+  const lut2 = parseAnyLUTFile(secondCubeWithShaperAndSameHeader, 'Cool_Cyber_Teal_02.cube');
+
+  assert.equal(lut1.title, 'Warm_Golden_Film_01');
+  assert.equal(lut2.title, 'Cool_Cyber_Teal_02');
+  assert.notEqual(lut1.id, lut2.id, '1st and 2nd uploaded LUTs must have distinct IDs');
+
+  const solved1 = fitLUTToLightroomXMP(lut1, { presetName: lut1.title });
+  const solved2 = fitLUTToLightroomXMP(lut2, { presetName: lut2.title });
+
+  assert.notEqual(
+    solved1.params.uuid,
+    solved2.params.uuid,
+    '1st and 2nd LUT XMP presets must have distinct crs:UUID values so Lightroom imports both'
+  );
+  assert.notEqual(
+    solved1.params.temperature,
+    solved2.params.temperature,
+    '1st warm LUT and 2nd cool LUT must solve to distinct Lightroom temperature values'
+  );
+
+  const xmp1 = generateLightroomXMP(solved1.params);
+  const xmp2 = generateLightroomXMP(solved2.params);
+  assert.ok(xmp1.includes('Warm_Golden_Film_01'));
+  assert.ok(xmp2.includes('Cool_Cyber_Teal_02'));
+  assert.notEqual(xmp1, xmp2);
+});
+
 
 test('generateLightroomInstallerScript creates self-contained Windows .ps1 and macOS .command scripts with embedded XMP', () => {
   const builtIns = createBuiltInCinemaLUTs();

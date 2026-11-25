@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   LUT3D,
   LightroomXMPParams,
@@ -16,6 +16,7 @@ import {
   FileCode2,
   Layers,
   Terminal,
+  Upload,
 } from 'lucide-react';
 
 interface XMPInspectorAndBatchViewProps {
@@ -26,6 +27,7 @@ interface XMPInspectorAndBatchViewProps {
   metrics: LUTAnalysisMetrics;
   onSelectLUT: (lut: LUT3D) => void;
   onTriggerSingleExport: () => void;
+  onUploadLUTFiles?: (files: FileList | null) => void;
 }
 
 export const XMPInspectorAndBatchView: React.FC<XMPInspectorAndBatchViewProps> = ({
@@ -36,6 +38,7 @@ export const XMPInspectorAndBatchView: React.FC<XMPInspectorAndBatchViewProps> =
   metrics,
   onSelectLUT,
   onTriggerSingleExport,
+  onUploadLUTFiles,
 }) => {
   const [copiedXml, setCopiedXml] = useState(false);
   const [inspectorViewMode, setInspectorViewMode] = useState<'xmp-xml' | 'installer-script'>('xmp-xml');
@@ -49,6 +52,19 @@ export const XMPInspectorAndBatchView: React.FC<XMPInspectorAndBatchViewProps> =
     allLUTs.map((l) => l.id)
   );
   const [batchExportCount, setBatchExportCount] = useState<number>(0);
+
+  // Automatically include newly uploaded 2nd/3rd/Nth LUTs in selectedBatchIds
+  useEffect(() => {
+    setSelectedBatchIds((prev) => {
+      const next = new Set(prev);
+      for (const lut of allLUTs) {
+        if (lut.category?.includes('Imported') || lut.category?.includes('Custom')) {
+          next.add(lut.id);
+        }
+      }
+      return Array.from(next);
+    });
+  }, [allLUTs]);
 
   const xmlString = generateLightroomXMP(xmpParams);
   const singleInstaller = generateLightroomInstallerScript([xmpParams], installerPlatform);
@@ -84,6 +100,24 @@ export const XMPInspectorAndBatchView: React.FC<XMPInspectorAndBatchViewProps> =
     const a = document.createElement('a');
     a.href = url;
     a.download = `${lut.title.replace(/[^a-z0-9-_]+/gi, '_')}.cube`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadSpecificLUTAsXMP = (lut: LUT3D) => {
+    const { params } = fitLUTToLightroomXMP(lut, {
+      presetName: lut.title,
+      presetGroup: batchGroup || xmpParams.presetGroup,
+      lutIntensity: batchIntensity,
+      skinToneProtection: batchSkinProtection,
+      curvePointCount: xmpParams.curvePointCount,
+    });
+    const xml = generateLightroomXMP(params);
+    const blob = new Blob([xml], { type: 'application/rdf+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${params.presetName.replace(/[^a-z0-9-_]+/gi, '_')}.xmp`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -373,6 +407,22 @@ export const XMPInspectorAndBatchView: React.FC<XMPInspectorAndBatchViewProps> =
               Generated {batchExportCount} presets
             </span>
           )}
+          {onUploadLUTFiles && (
+            <label className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-gradient-to-r from-[#6D28D9] to-[#8B5CF6] hover:brightness-110 border border-[#A78BFA]/40 rounded-lg transition-all whitespace-nowrap shrink-0 cursor-pointer">
+              <Upload className="w-3.5 h-3.5" />
+              <span>Import LUT(s)</span>
+              <input
+                type="file"
+                multiple
+                accept=".cube,.3dl,.look,.lut,text/plain"
+                onChange={(e) => {
+                  onUploadLUTFiles(e.target.files);
+                  e.target.value = '';
+                }}
+                className="sr-only"
+              />
+            </label>
+          )}
           <button
             type="button"
             onClick={() => handleBatchDownloadInstallerScript('windows-ps1')}
@@ -470,18 +520,25 @@ export const XMPInspectorAndBatchView: React.FC<XMPInspectorAndBatchViewProps> =
                       {m.meanDeltaE.toFixed(2)}
                     </td>
                     <td className="py-3 px-4 text-right">
-                      <div className="inline-flex items-center gap-2">
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadSpecificLUTAsXMP(lut)}
+                          className="px-2.5 py-1 text-xs font-semibold text-zinc-950 bg-amber-500 hover:bg-amber-400 rounded transition-colors whitespace-nowrap cursor-pointer"
+                        >
+                          Export .XMP
+                        </button>
                         <button
                           type="button"
                           onClick={() => onSelectLUT(lut)}
-                          className="px-2.5 py-1 text-xs font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 rounded transition-colors whitespace-nowrap"
+                          className="px-2.5 py-1 text-xs font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 rounded transition-colors whitespace-nowrap cursor-pointer"
                         >
                           Load in Studio
                         </button>
                         <button
                           type="button"
                           onClick={() => handleDownloadCubeSample(lut)}
-                          className="px-2.5 py-1 text-xs font-medium text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded transition-colors whitespace-nowrap"
+                          className="px-2.5 py-1 text-xs font-medium text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded transition-colors whitespace-nowrap cursor-pointer"
                         >
                           .CUBE
                         </button>

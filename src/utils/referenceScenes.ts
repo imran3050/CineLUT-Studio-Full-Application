@@ -445,7 +445,9 @@ export function generateLUTThumbnailDataURL(
   width = 112,
   height = 68
 ): string {
-  const cacheKey = `${lut.id}-${lut.title}-${width}x${height}`;
+  const midIdx = Math.floor(lut.data.length / 2);
+  const dataSig = `${lut.data[0]?.toFixed(3) ?? 0}-${lut.data[midIdx]?.toFixed(3) ?? 0}-${lut.data[lut.data.length - 1]?.toFixed(3) ?? 0}`;
+  const cacheKey = `${lut.id}-${lut.title}-${dataSig}-${width}x${height}`;
   const cached = thumbnailCache.get(cacheKey);
   if (cached) return cached;
 

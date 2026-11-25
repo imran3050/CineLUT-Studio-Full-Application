@@ -9,6 +9,7 @@ import {
   generateLightroomXMP,
   parseCubeLUT,
   parse3dlLUT,
+  parseAnyLUTFile,
   serializeCubeLUT,
   bakeXMPParamsTo3DLUT,
   parseLightroomXMPString,
@@ -343,48 +344,105 @@ export default function App() {
       img.src = reader.result as string;
     };
     reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
-  const processUploadedLUTFiles = (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    setUploadError(null);
-
-    Array.from(files).forEach((file, idx) => {
+  const readFileAsText = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = () => {
-        try {
-          const text = String(reader.result ?? '');
-          const cleanName = file.name.replace(/\.(cube|3dl|look|lut)$/i, '');
-          const is3dl = /\.3dl$/i.test(file.name);
-          const parsed = is3dl
-            ? parse3dlLUT(text, cleanName)
-            : parseCubeLUT(text, cleanName);
-
-          parsed.category = 'Custom Imported';
-          parsed.description = `Imported from ${file.name} (${parsed.size}³ mesh)`;
-
-          setLuts((prev) => [parsed, ...prev.filter((item) => item.id !== parsed.id)]);
-          if (idx === 0) {
-            handleSelectLUT(parsed);
-          }
-        } catch (err) {
-          setUploadError(
-            err instanceof Error ? err.message : `Unable to parse ${file.name}.`
-          );
-        }
-      };
+      reader.onload = () => resolve(String(reader.result ?? ''));
+      reader.onerror = () => reject(new Error(`Unable to read file "${file.name}".`));
       reader.readAsText(file);
     });
+
+  const processUploadedLUTFiles = async (files: FileList | File[] | null) => {
+    if (!files || files.length === 0) return;
+    const fileList = Array.from(files);
+    setUploadError(null);
+
+    const parsedBatch: LUT3D[] = [];
+    const errors: string[] = [];
+
+    for (const file of fileList) {
+      try {
+        const text = await readFileAsText(file);
+        const parsed = parseAnyLUTFile(text, file.name);
+        parsed.category = 'Custom Imported';
+        parsed.description = `Imported from ${file.name} (${parsed.size}³ mesh)`;
+        parsedBatch.push(parsed);
+      } catch (err) {
+        errors.push(
+          err instanceof Error ? `${file.name}: ${err.message}` : `Unable to parse ${file.name}.`
+        );
+      }
+    }
+
+    if (errors.length > 0) {
+      setUploadError(errors.join(' · '));
+    }
+
+    if (parsedBatch.length === 0) return;
+
+    // Ensure every newly uploaded LUT is added to the library and never silently dropped
+    setLuts((prev) => {
+      const nextList = [...prev];
+      for (const incoming of parsedBatch) {
+        const existingIdx = nextList.findIndex((item) => item.id === incoming.id);
+        if (existingIdx !== -1) {
+          // If the exact same LUT ID exists, check if the title differs; if so, assign a disambiguated ID
+          if (nextList[existingIdx].title !== incoming.title) {
+            incoming.id = `${incoming.id}-${Date.now().toString(36).slice(-4)}`;
+            nextList.unshift(incoming);
+          } else {
+            // Replace in-place and move to top of library so the user sees their latest upload first
+            nextList.splice(existingIdx, 1);
+            nextList.unshift(incoming);
+          }
+        } else {
+          nextList.unshift(incoming);
+        }
+      }
+      return nextList;
+    });
+
+    // Clear any active search filter so the newly uploaded LUT is immediately visible
+    setSearchQuery('');
+
+    // Activate the most recently uploaded LUT and immediately solve its Lightroom XMP parameters
+    const primaryLUT = parsedBatch[parsedBatch.length - 1];
+    setActiveLUTId(primaryLUT.id);
+    const { params, metrics: solvedMetrics } = fitLUTToLightroomXMP(primaryLUT, {
+      presetName: primaryLUT.title,
+      presetGroup: xmpParams.presetGroup || 'CineLUT Studio Grades',
+      lutIntensity: xmpParams.lutIntensity,
+      skinToneProtection: xmpParams.skinToneProtection,
+      curvePointCount: xmpParams.curvePointCount,
+    });
+    updateXmpParamsWithHistory(params);
+
+    const summaryText =
+      parsedBatch.length === 1
+        ? `Converted "${primaryLUT.title}" (${primaryLUT.size}³ .${primaryLUT.format}) to Lightroom XMP (Mean ΔE ${solvedMetrics.meanDeltaE.toFixed(2)}). Ready to export!`
+        : `Imported & converted ${parsedBatch.length} LUTs to Lightroom XMP (Active: "${primaryLUT.title}" · Mean ΔE ${solvedMetrics.meanDeltaE.toFixed(2)}).`;
+
+    setExportStatusBanner(summaryText);
   };
 
   const handleLUTFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    processUploadedLUTFiles(e.target.files);
+    const selectedFiles = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = '';
+    if (selectedFiles.length > 0) {
+      void processUploadedLUTFiles(selectedFiles);
+    }
   };
 
-  const handleDropLUTs = (e: React.DragEvent<HTMLLabelElement>) => {
+  const handleDropLUTs = (e: React.DragEvent<HTMLElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    processUploadedLUTFiles(e.dataTransfer.files);
+    const droppedFiles = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+    if (droppedFiles.length > 0) {
+      void processUploadedLUTFiles(droppedFiles);
+    }
   };
 
   const handleSaveSnapshotDraft = () => {
@@ -669,19 +727,37 @@ export default function App() {
           {exportStatusBanner && (
             <div
               role="status"
-              className="flex items-center justify-between gap-3 px-4 py-2 rounded-xl bg-violet-950/70 border border-violet-500/40 text-xs text-violet-100"
+              className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 rounded-xl bg-violet-950/80 border border-violet-500/40 text-xs text-violet-100"
             >
               <div className="flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-violet-400 shrink-0" />
                 <span>{exportStatusBanner}</span>
               </div>
-              <button
-                type="button"
-                onClick={() => setExportStatusBanner(null)}
-                className="text-violet-300 hover:text-white font-medium cursor-pointer"
-              >
-                Dismiss
-              </button>
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={handleExportSingleXMP}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-gradient-to-r from-amber-500 to-fuchsia-600 text-white font-semibold hover:brightness-110 cursor-pointer"
+                >
+                  <Download className="w-3 h-3" />
+                  <span>Download .XMP ({xmpParams.presetName})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => lutInputRef.current?.click()}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-violet-800/60 hover:bg-violet-700/70 border border-violet-400/30 text-violet-100 font-medium cursor-pointer"
+                >
+                  <Upload className="w-3 h-3" />
+                  <span>Upload Another LUT</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportStatusBanner(null)}
+                  className="text-violet-300 hover:text-white font-medium cursor-pointer"
+                >
+                  Dismiss
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -932,10 +1008,10 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Filmstrip Cards Row — all 8 cards + Add LUT visible across the dock */}
+                {/* Filmstrip Cards Row — all LUT cards + Add LUT visible across the dock */}
                 {filmstripTab === 'applied-lut' && (
-                  <div className="grid grid-cols-3 sm:grid-cols-5 xl:grid-cols-9 gap-1.5">
-                    {luts.slice(0, 8).map((lut) => {
+                  <div className="grid grid-cols-3 sm:grid-cols-5 xl:grid-cols-9 gap-1.5 max-h-[172px] overflow-y-auto cinelut-scroll pr-0.5">
+                    {luts.map((lut) => {
                       const isSelected = lut.id === activeLUT.id;
                       const thumbUrl = lutThumbnails[lut.id];
                       const shortTitle = FILMSTRIP_SHORT_NAMES[lut.id] ?? lut.title;
@@ -1425,18 +1501,90 @@ export default function App() {
         {workspaceTab === 'lut-to-xmp' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
             <div className="lg:col-span-5 bg-[#121221] border border-[#24243B] rounded-2xl p-5 flex flex-col gap-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <div>
                   <h2 className="text-base font-bold text-white">
                     3D LUT (.CUBE / .3DL) → Lightroom (.XMP) Solver
                   </h2>
                   <p className="text-xs text-zinc-400 mt-0.5">
-                    Configure mathematical solver precision, skin-tone protection, and direct Adobe Lightroom installer scripts.
+                    Upload one or multiple 3D LUT files sequentially, switch between active LUTs, and export native Adobe Lightroom .xmp presets.
                   </p>
                 </div>
               </div>
 
+              {/* Direct LUT File Dropzone & Active LUT Switcher inside LUT to XMP tab */}
+              <div className="bg-[#171729] border border-[#282842] rounded-xl p-4 flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-white">
+                    1. Upload or Select Source 3D LUT ({luts.length} in Library)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => lutInputRef.current?.click()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-[#6D28D9] to-[#8B5CF6] hover:brightness-110 shadow-[0_0_14px_rgba(124,58,237,0.35)] cursor-pointer"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Upload .CUBE / .3DL File(s)</span>
+                  </button>
+                </div>
+
+                <label
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onDrop={handleDropLUTs}
+                  className="border-2 border-dashed border-[#6D28D9]/70 hover:border-[#A78BFA] bg-[#131026]/80 hover:bg-[#1B1534] rounded-xl p-3 flex items-center justify-between gap-3 cursor-pointer transition-all"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Upload className="w-4 h-4 text-[#A78BFA] shrink-0" />
+                    <div className="text-left">
+                      <div className="text-xs font-semibold text-zinc-100">
+                        Drop 1st, 2nd, or multiple .CUBE / .3DL LUT files here
+                      </div>
+                      <div className="text-[11px] text-zinc-400">
+                        Each uploaded LUT is added to your library and immediately converted to .XMP
+                      </div>
+                    </div>
+                  </div>
+                  <span className="px-2.5 py-1 rounded-lg bg-[#251C47] border border-[#A78BFA]/40 text-[11px] font-semibold text-violet-200 shrink-0">
+                    Browse Files
+                  </span>
+                  <input
+                    type="file"
+                    multiple
+                    accept=".cube,.3dl,.look,.lut,text/plain"
+                    onChange={handleLUTFileUpload}
+                    className="sr-only"
+                  />
+                </label>
+
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="lut-to-xmp-active-selector" className="text-xs text-zinc-300">
+                    Active LUT Being Converted to .XMP
+                  </label>
+                  <select
+                    id="lut-to-xmp-active-selector"
+                    value={activeLUT.id}
+                    onChange={(e) => {
+                      const found = luts.find((item) => item.id === e.target.value);
+                      if (found) handleSelectLUT(found);
+                    }}
+                    className="bg-[#11111F] border border-[#2D2D48] rounded-xl px-3 py-2 text-xs text-white font-medium"
+                  >
+                    {luts.map((lut) => (
+                      <option key={lut.id} value={lut.id}>
+                        {lut.title} ({lut.category ?? 'Custom'} · {lut.size}³ .{lut.format})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
               <div className="flex flex-col gap-3 bg-[#171729] border border-[#282842] rounded-xl p-4">
+                <div className="text-xs font-bold text-white">
+                  2. Configure &amp; Export Lightroom (.XMP) Preset
+                </div>
                 <div className="flex flex-col gap-1">
                   <label htmlFor="solver-preset-name" className="text-xs text-zinc-300">
                     Lightroom Preset Name (crs:Name)
@@ -1566,7 +1714,7 @@ DOMAIN_MAX 1.0 1.0 1.0
                   className="bg-[#11111F] border border-[#2D2D48] rounded-xl px-3 py-2 text-xs text-white"
                 />
                 <textarea
-                  rows={5}
+                  rows={4}
                   value={rawCubeInput}
                   onChange={(e) => setRawCubeInput(e.target.value)}
                   placeholder={'TITLE "Custom"\nLUT_3D_SIZE 17\n0.0 0.0 0.0 ...'}
@@ -1590,9 +1738,11 @@ DOMAIN_MAX 1.0 1.0 1.0
                 metrics={metrics}
                 onSelectLUT={(lut) => {
                   handleSelectLUT(lut);
-                  setWorkspaceTab('studio');
                 }}
                 onTriggerSingleExport={handleExportSingleXMP}
+                onUploadLUTFiles={(files) => {
+                  void processUploadedLUTFiles(files);
+                }}
               />
             </div>
           </div>
@@ -1687,6 +1837,9 @@ DOMAIN_MAX 1.0 1.0 1.0
               setWorkspaceTab('studio');
             }}
             onTriggerSingleExport={handleExportSingleXMP}
+            onUploadLUTFiles={(files) => {
+              void processUploadedLUTFiles(files);
+            }}
           />
         )}
 
