@@ -1,0 +1,6 @@
+{
+  "name": "ChromaXMP — 3D LUT to Lightroom XMP Converter",
+  "description": "Precision color science workstation that analyzes 3D LUT (.cube & .3dl) files and converts them into editable Adobe Lightroom Classic & ACR (.xmp) develop presets with live curves, 8-channel HSL, and split-toning.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
