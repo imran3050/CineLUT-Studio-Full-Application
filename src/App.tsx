@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   LUT3D,
   LightroomXMPParams,
+  SavedPresetSnapshot,
   createBuiltInCinemaLUTs,
   fitLUTToLightroomXMP,
   computeApproximationMetrics,
@@ -18,6 +19,10 @@ import { ToneCurveEditor } from './components/ToneCurveEditor';
 import { HSLAndColorWheelsPanel } from './components/HSLAndColorWheelsPanel';
 import { XMPInspectorAndBatchView } from './components/XMPInspectorAndBatchView';
 import {
+  PWAInstallButtonAndModal,
+  OfflineIndicator,
+} from './components/DesktopInstallSection';
+import {
   Upload,
   Download,
   RefreshCw,
@@ -27,15 +32,40 @@ import {
   Palette,
   AlertCircle,
   CheckCircle2,
+  BookmarkPlus,
+  Trash2,
 } from 'lucide-react';
 
 type MainWorkspaceTab = 'studio' | 'curves-hsl' | 'inspector' | 'batch';
 type DevelopPanelTab = 'basic' | 'curves' | 'hsl-wheels' | 'calibration';
 
+const STORAGE_SESSION_KEY = 'chromaxmp_session_v1';
+const STORAGE_SNAPSHOTS_KEY = 'chromaxmp_saved_snapshots_v1';
+
 export default function App() {
   const initialLUTs = useMemo(() => createBuiltInCinemaLUTs(), []);
   const [luts, setLuts] = useState<LUT3D[]>(initialLUTs);
-  const [activeLUTId, setActiveLUTId] = useState<string>(initialLUTs[0].id);
+
+  // Load persisted session from browser localStorage if available
+  const savedSession = useMemo(() => {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_SESSION_KEY);
+      if (raw) {
+        return JSON.parse(raw) as {
+          activeLUTId?: string;
+          xmpParams?: LightroomXMPParams;
+          activeSceneId?: string;
+        };
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+    return null;
+  }, []);
+
+  const [activeLUTId, setActiveLUTId] = useState<string>(
+    savedSession?.activeLUTId ?? initialLUTs[0].id
+  );
 
   const activeLUT = useMemo(
     () => luts.find((l) => l.id === activeLUTId) ?? luts[0],
@@ -43,6 +73,9 @@ export default function App() {
   );
 
   const [xmpParams, setXmpParams] = useState<LightroomXMPParams>(() => {
+    if (savedSession?.xmpParams && savedSession.xmpParams.toneCurveRGB) {
+      return savedSession.xmpParams;
+    }
     return fitLUTToLightroomXMP(initialLUTs[0], {
       presetName: initialLUTs[0].title,
       presetGroup: 'ChromaXMP Cinema Grades',
@@ -52,18 +85,63 @@ export default function App() {
     }).params;
   });
 
+  const [savedSnapshots, setSavedSnapshots] = useState<SavedPresetSnapshot[]>(() => {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_SNAPSHOTS_KEY);
+      if (raw) {
+        return JSON.parse(raw) as SavedPresetSnapshot[];
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+    return [];
+  });
+
   const [workspaceTab, setWorkspaceTab] = useState<MainWorkspaceTab>('studio');
   const [developTab, setDevelopTab] = useState<DevelopPanelTab>('basic');
-  const [activeSceneId, setActiveSceneId] = useState<string>('golden-portrait');
+  const [activeSceneId, setActiveSceneId] = useState<string>(
+    savedSession?.activeSceneId ?? 'golden-portrait'
+  );
   const [comparisonMode, setComparisonMode] =
     useState<PreviewComparisonMode>('xmp-vs-original');
 
-  // Raw .cube paste modal/drawer state
   const [showRawCubeEditor, setShowRawCubeEditor] = useState<boolean>(false);
   const [rawCubeTitle, setRawCubeTitle] = useState<string>('');
   const [rawCubeInput, setRawCubeInput] = useState<string>('');
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [exportStatusBanner, setExportStatusBanner] = useState<string | null>(null);
+  const [lastAutoSaveTime, setLastAutoSaveTime] = useState<string>('Auto-saved locally');
+
+  // Auto-save active session to browser localStorage whenever parameters change
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        STORAGE_SESSION_KEY,
+        JSON.stringify({
+          activeLUTId,
+          xmpParams,
+          activeSceneId,
+        })
+      );
+      const now = new Date();
+      setLastAutoSaveTime(
+        `Auto-saved ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+      );
+    } catch {
+      // Ignore quota errors
+    }
+  }, [activeLUTId, xmpParams, activeSceneId]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        STORAGE_SNAPSHOTS_KEY,
+        JSON.stringify(savedSnapshots)
+      );
+    } catch {
+      // Ignore quota errors
+    }
+  }, [savedSnapshots]);
 
   const metrics = useMemo(
     () => computeApproximationMetrics(activeLUT, xmpParams),
@@ -96,6 +174,36 @@ export default function App() {
       curvePointCount: overridePoints ?? xmpParams.curvePointCount,
     });
     setXmpParams(params);
+  };
+
+  const handleSaveSnapshotDraft = () => {
+    const name = xmpParams.presetName.trim() || activeLUT.title;
+    const snap: SavedPresetSnapshot = {
+      id: `snap-${Date.now()}`,
+      name,
+      lutId: activeLUT.id,
+      lutTitle: activeLUT.title,
+      updatedAt: new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+      meanDeltaE: metrics.meanDeltaE,
+      params: structuredClone(xmpParams),
+    };
+    setSavedSnapshots((prev) => [snap, ...prev]);
+    setExportStatusBanner(`Saved snapshot "${name}" to browser local storage.`);
+    setTimeout(() => setExportStatusBanner(null), 4000);
+  };
+
+  const handleLoadSnapshotDraft = (snap: SavedPresetSnapshot) => {
+    if (luts.some((l) => l.id === snap.lutId)) {
+      setActiveLUTId(snap.lutId);
+    }
+    setXmpParams(structuredClone(snap.params));
+  };
+
+  const handleDeleteSnapshotDraft = (id: string) => {
+    setSavedSnapshots((prev) => prev.filter((s) => s.id !== id));
   };
 
   const handleLUTFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -194,6 +302,8 @@ DOMAIN_MAX 1.0 1.0 1.0
 
   return (
     <div className="min-h-screen bg-[#090A0F] text-zinc-100 flex flex-col">
+      <OfflineIndicator />
+
       {/* Strict 3-Zone Top Bar Contract */}
       <header className="flex items-center justify-between gap-8 px-6 py-3.5 bg-[#0D0F17] border-b border-zinc-800/90 sticky top-0 z-30">
         {/* Zone 1: Single text element wordmark */}
@@ -348,10 +458,17 @@ DOMAIN_MAX 1.0 1.0 1.0
               <span className="font-mono tabular-nums text-amber-400">
                 Fitted XMP Error ΔE {metrics.meanDeltaE.toFixed(2)}
               </span>
+              <span aria-hidden="true">·</span>
+              <span className="text-emerald-400 font-mono tabular-nums">
+                {lastAutoSaveTime}
+              </span>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
+            {/* In-App Standalone PC / PWA Installation Button & Modal */}
+            <PWAInstallButtonAndModal />
+
             <label className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-zinc-200 bg-[#11131C] hover:bg-zinc-800 border border-zinc-800 rounded-lg cursor-pointer transition-colors whitespace-nowrap shrink-0">
               <Upload className="w-3.5 h-3.5 text-amber-400" />
               <span>Import .CUBE / .3DL File</span>
@@ -453,7 +570,7 @@ DOMAIN_MAX 1.0 1.0 1.0
         {/* Workspace View Switcher */}
         {workspaceTab === 'studio' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            {/* Left Column (3 cols): 3D LUT Source Library & Conversion Solver Settings */}
+            {/* Left Column (3 cols): 3D LUT Source Library, Solver & Saved Snapshots */}
             <aside className="lg:col-span-3 flex flex-col gap-4">
               {/* LUT Library List */}
               <div className="bg-[#11131C] border border-zinc-800/90 rounded-xl p-3.5 flex flex-col gap-2.5">
@@ -507,9 +624,19 @@ DOMAIN_MAX 1.0 1.0 1.0
 
               {/* XMP Conversion Solver & Preset Metadata */}
               <div className="bg-[#11131C] border border-zinc-800/90 rounded-xl p-3.5 flex flex-col gap-3">
-                <h2 className="text-xs font-semibold text-zinc-200">
-                  XMP Preset Target &amp; LUT Solver
-                </h2>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xs font-semibold text-zinc-200">
+                    XMP Preset Target &amp; Solver
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={handleSaveSnapshotDraft}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-amber-400 hover:text-amber-300 transition-colors"
+                  >
+                    <BookmarkPlus className="w-3.5 h-3.5" />
+                    <span>Save Draft</span>
+                  </button>
+                </div>
 
                 <div className="flex flex-col gap-1">
                   <label htmlFor="xmp-preset-name" className="text-xs text-zinc-400">
@@ -601,6 +728,44 @@ DOMAIN_MAX 1.0 1.0 1.0
                   />
                   <span>Enable Lightroom Amount Slider</span>
                 </label>
+
+                {/* Saved Browser LocalStorage Draft Snapshots */}
+                {savedSnapshots.length > 0 && (
+                  <div className="pt-2.5 border-t border-zinc-800/80 flex flex-col gap-2">
+                    <div className="text-xs font-medium text-zinc-300">
+                      Saved Local Drafts ({savedSnapshots.length})
+                    </div>
+                    <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto">
+                      {savedSnapshots.map((snap) => (
+                        <div
+                          key={snap.id}
+                          className="flex items-center justify-between gap-2 p-2 rounded-lg bg-[#090A0F] border border-zinc-800/80 text-xs"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => handleLoadSnapshotDraft(snap)}
+                            className="text-left flex-1 min-w-0 hover:text-amber-300 transition-colors"
+                          >
+                            <div className="font-medium text-zinc-200 truncate">
+                              {snap.name}
+                            </div>
+                            <div className="text-zinc-500 font-mono tabular-nums">
+                              {snap.updatedAt} · ΔE {snap.meanDeltaE.toFixed(2)}
+                            </div>
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`Delete saved draft ${snap.name}`}
+                            onClick={() => handleDeleteSnapshotDraft(snap.id)}
+                            className="p-1 text-zinc-500 hover:text-rose-400 transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </aside>
 
@@ -1034,8 +1199,8 @@ DOMAIN_MAX 1.0 1.0 1.0
       <footer className="mt-auto border-t border-zinc-900 bg-[#07080C] px-6 py-4">
         <div className="max-w-[1440px] mx-auto flex flex-wrap items-center justify-between gap-4 text-xs text-zinc-500">
           <span>
-            ChromaXMP · 3D LUT (.CUBE / .3DL) to Adobe Lightroom Classic &amp; Camera Raw (.XMP)
-            Preset Workstation
+            ChromaXMP · Standalone Installable PWA &amp; 3D LUT (.CUBE / .3DL) to Adobe Lightroom
+            (.XMP) Workstation
           </span>
           <span>
             Compatible with Lightroom Classic v7.3+, Lightroom Desktop, and Adobe Camera Raw v10.3+

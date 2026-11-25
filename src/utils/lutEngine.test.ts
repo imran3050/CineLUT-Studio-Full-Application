@@ -9,7 +9,27 @@ import {
   generateLightroomXMP,
   createBuiltInCinemaLUTs,
   applyLightroomXMPToRGB,
+  generateLightroomInstallerScript,
 } from './lutEngine';
+
+test('generateLightroomInstallerScript creates self-contained Windows .ps1 and macOS .command scripts with embedded XMP', () => {
+  const builtIns = createBuiltInCinemaLUTs();
+  const { params } = fitLUTToLightroomXMP(builtIns[0], {
+    presetName: 'Kodak 2383 Print',
+    presetGroup: 'ChromaXMP Film',
+  });
+
+  const winScript = generateLightroomInstallerScript([params], 'windows-ps1');
+  assert.ok(winScript.filename.endsWith('.ps1'));
+  assert.ok(winScript.content.includes('Adobe\\CameraRaw\\Settings'));
+  assert.ok(winScript.content.includes('<x:xmpmeta'));
+  assert.ok(winScript.content.includes('Kodak_2383_Print.xmp'));
+
+  const macScript = generateLightroomInstallerScript([params], 'macos-command');
+  assert.ok(macScript.filename.endsWith('.command'));
+  assert.ok(macScript.content.includes('Library/Application Support/Adobe/CameraRaw/Settings'));
+  assert.ok(macScript.content.includes('<x:xmpmeta'));
+});
 
 test('parseCubeLUT parses valid 2x2x2 .cube file and trilinear interpolation matches identity', () => {
   const sampleCube = `

@@ -3,11 +3,20 @@ import {
   LUT3D,
   LightroomXMPParams,
   LUTAnalysisMetrics,
+  InstallerPlatform,
   generateLightroomXMP,
   fitLUTToLightroomXMP,
   serializeCubeLUT,
+  generateLightroomInstallerScript,
 } from '../utils/lutEngine';
-import { Copy, Check, Download, FileCode2, Layers, Sparkles } from 'lucide-react';
+import {
+  Copy,
+  Check,
+  Download,
+  FileCode2,
+  Layers,
+  Terminal,
+} from 'lucide-react';
 
 interface XMPInspectorAndBatchViewProps {
   mode: 'inspector' | 'batch';
@@ -29,6 +38,8 @@ export const XMPInspectorAndBatchView: React.FC<XMPInspectorAndBatchViewProps> =
   onTriggerSingleExport,
 }) => {
   const [copiedXml, setCopiedXml] = useState(false);
+  const [inspectorViewMode, setInspectorViewMode] = useState<'xmp-xml' | 'installer-script'>('xmp-xml');
+  const [installerPlatform, setInstallerPlatform] = useState<InstallerPlatform>('windows-ps1');
   const [batchGroup, setBatchGroup] = useState(xmpParams.presetGroup);
   const [batchIntensity, setBatchIntensity] = useState(xmpParams.lutIntensity);
   const [batchSkinProtection, setBatchSkinProtection] = useState(
@@ -40,16 +51,30 @@ export const XMPInspectorAndBatchView: React.FC<XMPInspectorAndBatchViewProps> =
   const [batchExportCount, setBatchExportCount] = useState<number>(0);
 
   const xmlString = generateLightroomXMP(xmpParams);
+  const singleInstaller = generateLightroomInstallerScript([xmpParams], installerPlatform);
 
-  const handleCopyXML = async () => {
+  const handleCopyCode = async () => {
+    const textToCopy =
+      inspectorViewMode === 'xmp-xml' ? xmlString : singleInstaller.content;
     try {
-      await navigator.clipboard.writeText(xmlString);
+      await navigator.clipboard.writeText(textToCopy);
       setCopiedXml(true);
       setTimeout(() => setCopiedXml(false), 2000);
     } catch {
       setCopiedXml(true);
       setTimeout(() => setCopiedXml(false), 2000);
     }
+  };
+
+  const handleDownloadSingleInstaller = (platform: InstallerPlatform) => {
+    const script = generateLightroomInstallerScript([xmpParams], platform);
+    const blob = new Blob([script.content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = script.filename;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleDownloadCubeSample = (lut: LUT3D) => {
@@ -69,76 +94,146 @@ export const XMPInspectorAndBatchView: React.FC<XMPInspectorAndBatchViewProps> =
     );
   };
 
-  const handleBatchDownloadAll = () => {
+  const getBatchFittedPresets = (): LightroomXMPParams[] => {
     const targets = allLUTs.filter((l) => selectedBatchIds.includes(l.id));
-    targets.forEach((lut, idx) => {
-      const { params } = fitLUTToLightroomXMP(lut, {
-        presetName: lut.title,
-        presetGroup: batchGroup,
-        lutIntensity: batchIntensity,
-        skinToneProtection: batchSkinProtection,
-        curvePointCount: xmpParams.curvePointCount,
-      });
+    return targets.map(
+      (lut) =>
+        fitLUTToLightroomXMP(lut, {
+          presetName: lut.title,
+          presetGroup: batchGroup,
+          lutIntensity: batchIntensity,
+          skinToneProtection: batchSkinProtection,
+          curvePointCount: xmpParams.curvePointCount,
+        }).params
+    );
+  };
+
+  const handleBatchDownloadAll = () => {
+    const fittedPresets = getBatchFittedPresets();
+    fittedPresets.forEach((params, idx) => {
       const xml = generateLightroomXMP(params);
       const blob = new Blob([xml], { type: 'application/rdf+xml;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${lut.title.replace(/[^a-z0-9-_]+/gi, '_')}.xmp`;
+      a.download = `${params.presetName.replace(/[^a-z0-9-_]+/gi, '_')}.xmp`;
       setTimeout(() => {
         a.click();
         URL.revokeObjectURL(url);
       }, idx * 120);
     });
-    setBatchExportCount((c) => c + targets.length);
+    setBatchExportCount((c) => c + fittedPresets.length);
+  };
+
+  const handleBatchDownloadInstallerScript = (platform: InstallerPlatform) => {
+    const fittedPresets = getBatchFittedPresets();
+    if (!fittedPresets.length) return;
+    const script = generateLightroomInstallerScript(fittedPresets, platform);
+    const blob = new Blob([script.content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = script.filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    setBatchExportCount((c) => c + fittedPresets.length);
   };
 
   if (mode === 'inspector') {
     return (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left 8 Columns: Live Adobe Camera Raw XMP XML Document */}
+        {/* Left 8 Columns: Live Adobe Camera Raw XMP XML Document or Auto-Installer Script */}
         <div className="lg:col-span-8 bg-[#11131C] border border-zinc-800/90 rounded-xl overflow-hidden flex flex-col">
           <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-[#0D0F17] border-b border-zinc-800/90">
-            <div className="flex items-center gap-2 text-xs">
-              <FileCode2 className="w-4 h-4 text-amber-400" />
-              <span className="font-semibold text-zinc-100">
-                {xmpParams.presetName.replace(/[^a-z0-9-_]+/gi, '_')}.xmp
-              </span>
-              <span aria-hidden="true" className="text-zinc-600">
-                ·
-              </span>
-              <span className="text-zinc-400 font-mono tabular-nums">
-                crs:Version=&quot;15.4&quot; · ProcessVersion=&quot;11.0&quot;
-              </span>
+            <div className="flex items-center gap-2">
+              <div
+                className="flex items-center gap-1 bg-[#090A0F] p-1 rounded-lg border border-zinc-800"
+                role="group"
+                aria-label="Code View Mode"
+              >
+                <button
+                  type="button"
+                  onClick={() => setInspectorViewMode('xmp-xml')}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                    inspectorViewMode === 'xmp-xml'
+                      ? 'bg-amber-500 text-zinc-950 font-semibold'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  <FileCode2 className="w-3.5 h-3.5" />
+                  <span>Adobe .XMP XML</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInspectorViewMode('installer-script')}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                    inspectorViewMode === 'installer-script'
+                      ? 'bg-amber-500 text-zinc-950 font-semibold'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  <Terminal className="w-3.5 h-3.5" />
+                  <span>Lightroom Installer Script</span>
+                </button>
+              </div>
+
+              {inspectorViewMode === 'installer-script' && (
+                <select
+                  aria-label="Select Installer OS Platform"
+                  value={installerPlatform}
+                  onChange={(e) =>
+                    setInstallerPlatform(e.target.value as InstallerPlatform)
+                  }
+                  className="bg-[#090A0F] border border-zinc-800 text-zinc-200 text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-amber-500"
+                >
+                  <option value="windows-ps1">Windows PowerShell (.ps1)</option>
+                  <option value="macos-command">macOS Terminal (.command)</option>
+                </select>
+              )}
             </div>
 
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={handleCopyXML}
+                onClick={handleCopyCode}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 rounded-lg transition-colors whitespace-nowrap shrink-0"
               >
                 {copiedXml ? (
                   <>
                     <Check className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Copied XML</span>
+                    <span>Copied</span>
                   </>
                 ) : (
                   <>
                     <Copy className="w-3.5 h-3.5" />
-                    <span>Copy XMP XML</span>
+                    <span>
+                      {inspectorViewMode === 'xmp-xml'
+                        ? 'Copy XMP XML'
+                        : 'Copy Installer Script'}
+                    </span>
                   </>
                 )}
               </button>
 
-              <button
-                type="button"
-                onClick={onTriggerSingleExport}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-zinc-950 bg-amber-500 hover:bg-amber-400 rounded-lg transition-colors whitespace-nowrap shrink-0"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>Download .XMP File</span>
-              </button>
+              {inspectorViewMode === 'xmp-xml' ? (
+                <button
+                  type="button"
+                  onClick={onTriggerSingleExport}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-zinc-950 bg-amber-500 hover:bg-amber-400 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download .XMP File</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => handleDownloadSingleInstaller(installerPlatform)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-zinc-950 bg-amber-500 hover:bg-amber-400 rounded-lg transition-colors whitespace-nowrap shrink-0"
+                >
+                  <Terminal className="w-3.5 h-3.5" />
+                  <span>Download Installer Script</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -146,12 +241,41 @@ export const XMPInspectorAndBatchView: React.FC<XMPInspectorAndBatchViewProps> =
             data-testid="xmp-xml-code"
             className="p-4 text-xs font-mono leading-relaxed text-zinc-300 bg-[#090A0F] overflow-x-auto max-h-[540px] overflow-y-auto"
           >
-            {xmlString}
+            {inspectorViewMode === 'xmp-xml' ? xmlString : singleInstaller.content}
           </pre>
         </div>
 
-        {/* Right 4 Columns: Preset Metadata & Adobe Lightroom Installation Steps */}
+        {/* Right 4 Columns: Auto-Installer Quick Download & Diagnostic Summary */}
         <div className="lg:col-span-4 flex flex-col gap-4">
+          <div className="bg-[#11131C] border border-zinc-800/90 rounded-xl p-4 flex flex-col gap-3">
+            <h3 className="text-sm font-semibold text-zinc-100">
+              1-Click Lightroom Auto-Installer Script
+            </h3>
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              Generate a self-contained installer script that embeds this preset and
+              automatically writes it into your Adobe Lightroom &amp; Camera Raw{' '}
+              <code className="text-zinc-300">Settings/{xmpParams.presetGroup}</code> folder.
+            </p>
+            <div className="flex flex-col gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => handleDownloadSingleInstaller('windows-ps1')}
+                className="w-full inline-flex items-center justify-center gap-2 px-3.5 py-2 text-xs font-semibold text-zinc-950 bg-amber-500 hover:bg-amber-400 rounded-lg transition-colors"
+              >
+                <Terminal className="w-3.5 h-3.5" />
+                <span>Download Windows Installer (.PS1)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDownloadSingleInstaller('macos-command')}
+                className="w-full inline-flex items-center justify-center gap-2 px-3.5 py-2 text-xs font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors"
+              >
+                <Terminal className="w-3.5 h-3.5 text-amber-400" />
+                <span>Download macOS Installer (.COMMAND)</span>
+              </button>
+            </div>
+          </div>
+
           <div className="bg-[#11131C] border border-zinc-800/90 rounded-xl p-4 flex flex-col gap-3">
             <h3 className="text-sm font-semibold text-zinc-100">
               Converted XMP Diagnostic Summary
@@ -186,32 +310,6 @@ export const XMPInspectorAndBatchView: React.FC<XMPInspectorAndBatchViewProps> =
                 </span>
               </div>
             </div>
-          </div>
-
-          <div className="bg-[#11131C] border border-zinc-800/90 rounded-xl p-4 flex flex-col gap-3">
-            <h3 className="text-sm font-semibold text-zinc-100">
-              How to Import into Adobe Lightroom
-            </h3>
-            <ol className="flex flex-col gap-2.5 text-xs text-zinc-300 leading-relaxed">
-              <li>
-                <span className="font-semibold text-amber-400">01. Lightroom Classic (v7.3+):</span>{' '}
-                Open the <span className="text-zinc-100">Develop</span> module, click the{' '}
-                <span className="text-zinc-100">+</span> icon in the Presets panel, choose{' '}
-                <span className="text-zinc-100">Import Presets</span>, and select your exported{' '}
-                <code className="text-amber-300">.xmp</code> file.
-              </li>
-              <li>
-                <span className="font-semibold text-amber-400">02. Lightroom Desktop &amp; Cloud:</span>{' '}
-                Go to <span className="text-zinc-100">File → Import Profiles &amp; Presets</span> and
-                choose the downloaded <code className="text-amber-300">.xmp</code> preset.
-              </li>
-              <li>
-                <span className="font-semibold text-amber-400">03. Adobe Camera Raw (Photoshop):</span>{' '}
-                In the Presets tab, open the menu and select{' '}
-                <span className="text-zinc-100">Import Profiles and Presets</span>, or drop the file into{' '}
-                <code className="text-zinc-400">CameraRaw/Settings</code>.
-              </li>
-            </ol>
           </div>
         </div>
       </div>
@@ -248,7 +346,7 @@ export const XMPInspectorAndBatchView: React.FC<XMPInspectorAndBatchViewProps> =
               max={150}
               value={batchIntensity}
               onChange={(e) => setBatchIntensity(Number(e.target.value))}
-              className="w-40 accent-amber-500 cursor-pointer"
+              className="w-36 accent-amber-500 cursor-pointer"
             />
           </div>
 
@@ -264,17 +362,37 @@ export const XMPInspectorAndBatchView: React.FC<XMPInspectorAndBatchViewProps> =
               max={100}
               value={batchSkinProtection}
               onChange={(e) => setBatchSkinProtection(Number(e.target.value))}
-              className="w-40 accent-amber-500 cursor-pointer"
+              className="w-36 accent-amber-500 cursor-pointer"
             />
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
           {batchExportCount > 0 && (
             <span className="text-xs text-emerald-400 font-mono tabular-nums">
-              Exported {batchExportCount} .XMP files
+              Generated {batchExportCount} presets
             </span>
           )}
+          <button
+            type="button"
+            onClick={() => handleBatchDownloadInstallerScript('windows-ps1')}
+            disabled={selectedBatchIds.length === 0}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-zinc-100 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 disabled:opacity-40 rounded-lg transition-colors whitespace-nowrap shrink-0"
+          >
+            <Terminal className="w-3.5 h-3.5 text-amber-400" />
+            <span>Windows Installer (.PS1)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleBatchDownloadInstallerScript('macos-command')}
+            disabled={selectedBatchIds.length === 0}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-zinc-100 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 disabled:opacity-40 rounded-lg transition-colors whitespace-nowrap shrink-0"
+          >
+            <Terminal className="w-3.5 h-3.5 text-amber-400" />
+            <span>macOS Installer (.COMMAND)</span>
+          </button>
+
           <button
             type="button"
             onClick={handleBatchDownloadAll}
@@ -282,7 +400,7 @@ export const XMPInspectorAndBatchView: React.FC<XMPInspectorAndBatchViewProps> =
             className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-zinc-950 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 rounded-lg transition-colors whitespace-nowrap shrink-0"
           >
             <Layers className="w-3.5 h-3.5" />
-            <span>Batch Export Selected ({selectedBatchIds.length}) .XMP</span>
+            <span>Batch Export ({selectedBatchIds.length}) .XMP</span>
           </button>
         </div>
       </div>

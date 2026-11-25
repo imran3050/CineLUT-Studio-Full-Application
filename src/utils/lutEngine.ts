@@ -1134,3 +1134,104 @@ export function createBuiltInCinemaLUTs(): LUT3D[] {
     ),
   ];
 }
+
+export interface SavedPresetSnapshot {
+  id: string;
+  name: string;
+  lutId: string;
+  lutTitle: string;
+  updatedAt: string;
+  meanDeltaE: number;
+  params: LightroomXMPParams;
+}
+
+export type InstallerPlatform = 'windows-ps1' | 'macos-command';
+
+/**
+ * Generates a self-contained Adobe Lightroom Classic / Camera Raw preset auto-installer script
+ * for Windows PowerShell (.ps1) or macOS Terminal (.command) that embeds the .xmp XML payloads
+ * and writes them directly into Adobe's CameraRaw/Settings directory.
+ */
+export function generateLightroomInstallerScript(
+  presets: LightroomXMPParams[],
+  platform: InstallerPlatform
+): { filename: string; content: string } {
+  const safeFolder = (presets[0]?.presetGroup || 'ChromaXMP Cinema Grades').replace(
+    /[^a-zA-Z0-9 _-]/g,
+    ''
+  ).trim() || 'ChromaXMP Cinema Grades';
+
+  if (platform === 'windows-ps1') {
+    const blocks = presets.map((p) => {
+      const fileSafe = `${(p.presetName || 'Preset').replace(/[^a-zA-Z0-9_-]/g, '_')}.xmp`;
+      const xml = generateLightroomXMP(p);
+      return `# Install ${p.presetName}
+$targetFile = Join-Path $targetDir "${fileSafe}"
+$xmlContent = @'
+${xml}
+'@
+Set-Content -Path $targetFile -Value $xmlContent -Encoding UTF8
+Write-Host "  [+] Installed: ${fileSafe}" -ForegroundColor Green`;
+    });
+
+    const content = `# ============================================================================
+# ChromaXMP — Adobe Lightroom Classic & Camera Raw Preset Auto-Installer (Windows)
+# Preset Group: ${safeFolder} (${presets.length} Preset${presets.length === 1 ? '' : 's'})
+# ============================================================================
+$ErrorActionPreference = "Stop"
+
+$acrRoot = Join-Path $env:APPDATA "Adobe\\CameraRaw\\Settings"
+$targetDir = Join-Path $acrRoot "${safeFolder}"
+
+Write-Host "Installing ChromaXMP Lightroom Presets into:" -ForegroundColor Cyan
+Write-Host "  $targetDir" -ForegroundColor Yellow
+
+if (-not (Test-Path -Path $targetDir)) {
+    New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+}
+
+${blocks.join('\n\n')}
+
+Write-Host ""
+Write-Host "Installation complete! Restart Adobe Lightroom Classic, Lightroom Desktop, or Photoshop to load your new '${safeFolder}' presets." -ForegroundColor Cyan
+`;
+    return {
+      filename: `Install_${safeFolder.replace(/\s+/g, '_')}_Lightroom_Windows.ps1`,
+      content,
+    };
+  }
+
+  // macOS .command (Bash script)
+  const macBlocks = presets.map((p) => {
+    const fileSafe = `${(p.presetName || 'Preset').replace(/[^a-zA-Z0-9_-]/g, '_')}.xmp`;
+    const xml = generateLightroomXMP(p);
+    return `cat << 'EOF_CHROMAXMP_XML' > "$TARGET_DIR/${fileSafe}"
+${xml}
+EOF_CHROMAXMP_XML
+echo "  [+] Installed: ${fileSafe}"`;
+  });
+
+  const macContent = `#!/usr/bin/env bash
+# ============================================================================
+# ChromaXMP — Adobe Lightroom Classic & Camera Raw Preset Auto-Installer (macOS)
+# Preset Group: ${safeFolder} (${presets.length} Preset${presets.length === 1 ? '' : 's'})
+# ============================================================================
+set -e
+
+TARGET_DIR="$HOME/Library/Application Support/Adobe/CameraRaw/Settings/${safeFolder}"
+echo "Installing ChromaXMP Lightroom Presets into:"
+echo "  $TARGET_DIR"
+mkdir -p "$TARGET_DIR"
+
+${macBlocks.join('\n\n')}
+
+echo ""
+echo "Installation complete! Restart Adobe Lightroom Classic, Lightroom Desktop, or Photoshop to load your '${safeFolder}' presets."
+`;
+
+  return {
+    filename: `Install_${safeFolder.replace(/\s+/g, '_')}_Lightroom_macOS.command`,
+    content: macContent,
+  };
+}
+
