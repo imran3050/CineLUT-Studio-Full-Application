@@ -10,6 +10,8 @@ import {
   createBuiltInCinemaLUTs,
   applyLightroomXMPToRGB,
   generateLightroomInstallerScript,
+  bakeXMPParamsTo3DLUT,
+  parseLightroomXMPString,
 } from './lutEngine';
 
 test('generateLightroomInstallerScript creates self-contained Windows .ps1 and macOS .command scripts with embedded XMP', () => {
@@ -82,9 +84,9 @@ test('parse3dlLUT parses 10-bit integer .3dl LUT and normalizes correctly', () =
   assert.ok(Math.abs(bOut - 0) < 1e-4);
 });
 
-test('fitLUTToLightroomXMP extracts accurate curves, HSL, and valid Adobe XMP XML from cinema LUTs', () => {
+test('fitLUTToLightroomXMP extracts accurate curves, HSL, and valid Adobe XMP XML from cinema LUTs, and bakeXMPParamsTo3DLUT reverses back to 3D LUT', () => {
   const builtIns = createBuiltInCinemaLUTs();
-  assert.equal(builtIns.length, 5);
+  assert.equal(builtIns.length, 8);
 
   const kodak = builtIns[0];
   const { params, metrics } = fitLUTToLightroomXMP(kodak, {
@@ -106,6 +108,14 @@ test('fitLUTToLightroomXMP extracts accurate curves, HSL, and valid Adobe XMP XM
   assert.ok(xmp.includes('crs:ProcessVersion="11.0"'));
   assert.ok(xmp.includes('<crs:ToneCurvePV2012>'));
   assert.ok(xmp.includes('Kodak 2383 Cinema'));
+
+  const parsedXmp = parseLightroomXMPString(xmp, params);
+  assert.equal(parsedXmp.presetName, 'Kodak 2383 Cinema');
+  assert.equal(parsedXmp.contrast, params.contrast);
+
+  const bakedLut = bakeXMPParamsTo3DLUT(parsedXmp, 9);
+  assert.equal(bakedLut.size, 9);
+  assert.equal(bakedLut.data.length, 9 * 9 * 9 * 3);
 
   const cubeText = serializeCubeLUT(kodak);
   const reparsed = parseCubeLUT(cubeText);

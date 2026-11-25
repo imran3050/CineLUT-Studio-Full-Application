@@ -754,9 +754,31 @@ export function applyLightroomXMPToRGB(
   g = clamp(g + masterDelta, 0, 1);
   b = clamp(b + masterDelta, 0, 1);
 
-  // 2. 8-Channel HSL Band Adjustments
+  // 1b. Basic Tone & White Balance live manual slider modulation
+  const expGain = Math.pow(2, (params.exposure || 0) * 0.35);
+  const tempShift = (params.temperature || 0) * 0.0018;
+  const tintShift = (params.tint || 0) * 0.0015;
+  r = clamp(r * expGain + tempShift + tintShift * 0.5, 0, 1);
+  g = clamp(g * expGain - tintShift, 0, 1);
+  b = clamp(b * expGain - tempShift + tintShift * 0.5, 0, 1);
+
+  const lumaMid = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const shMask = (1 - lumaMid) * (1 - lumaMid);
+  const hiMask = lumaMid * lumaMid;
+  const toneOffset =
+    ((params.shadows || 0) / 100) * 0.08 * shMask +
+    ((params.highlights || 0) / 100) * 0.08 * hiMask +
+    ((params.blacks || 0) / 100) * 0.05 * (1 - lumaMid) +
+    ((params.whites || 0) / 100) * 0.05 * lumaMid;
+  const contrastFactor = 1 + ((params.contrast || 0) / 100) * 0.22;
+
+  r = clamp((r - 0.5) * contrastFactor + 0.5 + toneOffset, 0, 1);
+  g = clamp((g - 0.5) * contrastFactor + 0.5 + toneOffset, 0, 1);
+  b = clamp((b - 0.5) * contrastFactor + 0.5 + toneOffset, 0, 1);
+
+  // 2. 8-Channel HSL Band Adjustments & Global Vibrance/Saturation
   const [h, s, l] = rgbToHsl(r, g, b);
-  if (s > 0.03) {
+  if (s > 0.01) {
     let totalHueDelta = 0;
     let totalSatFactor = 0;
     let totalLumDelta = 0;
@@ -1012,7 +1034,89 @@ ${serializeCurveSeq('ToneCurvePV2012Blue', params.toneCurveBlue)}
 }
 
 /**
- * Generates built-in procedural 17x17x17 Cinema 3D LUTs so users can immediately explore, edit, compare, and export real presets.
+ * Bakes any Adobe Lightroom Develop XMP parameter state into a downloadable 3D LUT (.cube).
+ * Powers the bidirectional "XMP to LUT" workflow in CineLUT Studio.
+ */
+export function bakeXMPParamsTo3DLUT(params: LightroomXMPParams, size = 17): LUT3D {
+  const grid = clamp(size, 2, 65);
+  const data = new Float32Array(grid * grid * grid * 3);
+  let ptr = 0;
+
+  for (let bi = 0; bi < grid; bi++) {
+    for (let gi = 0; gi < grid; gi++) {
+      for (let ri = 0; ri < grid; ri++) {
+        const r = ri / (grid - 1);
+        const g = gi / (grid - 1);
+        const b = bi / (grid - 1);
+        const [or, og, ob] = applyLightroomXMPToRGB(r, g, b, params);
+        data[ptr++] = clamp(or, 0, 1);
+        data[ptr++] = clamp(og, 0, 1);
+        data[ptr++] = clamp(ob, 0, 1);
+      }
+    }
+  }
+
+  return {
+    id: `xmp-baked-${deterministicUUID(params.presetName).slice(0, 8)}`,
+    title: params.presetName || 'Baked Lightroom XMP LUT',
+    format: 'cube',
+    size: grid,
+    domainMin: [0, 0, 0],
+    domainMax: [1, 1, 1],
+    data,
+    category: 'XMP → LUT Baked',
+    description: `Baked ${grid}×${grid}×${grid} 3D LUT from Lightroom XMP preset "${params.presetName}"`,
+  };
+}
+
+/**
+ * Parses an Adobe Lightroom (.xmp) XML string into LightroomXMPParams for reverse XMP-to-LUT conversion.
+ */
+export function parseLightroomXMPString(
+  xml: string,
+  fallbackBase: LightroomXMPParams
+): LightroomXMPParams {
+  const next: LightroomXMPParams = structuredClone(fallbackBase);
+
+  const readAttrNumber = (attr: string, def: number): number => {
+    const regex = new RegExp(`crs:${attr}="([^"]+)"`, 'i');
+    const match = xml.match(regex);
+    if (!match) return def;
+    const parsed = parseFloat(match[1]);
+    return Number.isNaN(parsed) ? def : parsed;
+  };
+
+  const nameMatch = xml.match(/<crs:Name>[\s\S]*?<rdf:li[^>]*>([^<]+)<\/rdf:li>/i);
+  if (nameMatch?.[1]) {
+    next.presetName = nameMatch[1].trim();
+  }
+
+  next.temperature = readAttrNumber('IncrementalTemperature', next.temperature);
+  next.tint = readAttrNumber('IncrementalTint', next.tint);
+  next.exposure = readAttrNumber('Exposure2012', next.exposure);
+  next.contrast = readAttrNumber('Contrast2012', next.contrast);
+  next.highlights = readAttrNumber('Highlights2012', next.highlights);
+  next.shadows = readAttrNumber('Shadows2012', next.shadows);
+  next.whites = readAttrNumber('Whites2012', next.whites);
+  next.blacks = readAttrNumber('Blacks2012', next.blacks);
+  next.clarity = readAttrNumber('Clarity2012', next.clarity);
+  next.dehaze = readAttrNumber('Dehaze', next.dehaze);
+  next.vibrance = readAttrNumber('Vibrance', next.vibrance);
+  next.saturation = readAttrNumber('Saturation', next.saturation);
+
+  for (const ch of HSL_CHANNELS) {
+    next.hsl[ch] = {
+      hue: readAttrNumber(`HueAdjustment${ch}`, next.hsl[ch].hue),
+      saturation: readAttrNumber(`SaturationAdjustment${ch}`, next.hsl[ch].saturation),
+      luminance: readAttrNumber(`LuminanceAdjustment${ch}`, next.hsl[ch].luminance),
+    };
+  }
+
+  return next;
+}
+
+/**
+ * Generates built-in procedural 17x17x17 Cinema 3D LUTs matching the CineLUT Studio library.
  */
 export function createBuiltInCinemaLUTs(): LUT3D[] {
   const size = 17;
@@ -1062,74 +1166,111 @@ export function createBuiltInCinemaLUTs(): LUT3D[] {
     buildLUT(
       'kodak-2383-print',
       'Kodak Vision3 2383 Print',
-      'Print Film Emulation',
-      'Dense cinema print contrast curve, deep teal shadows, warm creamy highlights, and rich golden skin rendition.',
+      'Film Emulation',
+      'Dense cinema print contrast curve, deep teal shadows, warm golden sunrise highlights, and rich skin rendition.',
       (r, g, b) => {
         const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        const rc = sCurve(r, 1.38, 0.02, 0.98) + (1 - luma) * -0.025 + luma * 0.035;
-        const gc = sCurve(g, 1.34, 0.025, 0.965) + luma * 0.01;
-        const bc = sCurve(b, 1.28, 0.045, 0.91) + (1 - luma) * 0.045 - luma * 0.045;
+        const rc = sCurve(r, 1.38, 0.02, 0.98) + (1 - luma) * -0.02 + luma * 0.055;
+        const gc = sCurve(g, 1.34, 0.022, 0.968) + luma * 0.022;
+        const bc = sCurve(b, 1.28, 0.038, 0.90) + (1 - luma) * 0.035 - luma * 0.065;
         const [h, s, l] = rgbToHsl(clamp(rc, 0, 1), clamp(gc, 0, 1), clamp(bc, 0, 1));
-        const hueShift = h > 80 && h < 160 ? 12 : h < 45 ? -4 : 0;
-        return hslToRgb((h + hueShift + 360) % 360, clamp(s * 1.12, 0, 1), l);
-      }
-    ),
-    buildLUT(
-      'blockbuster-teal-orange',
-      'Anamorphic Teal & Orange 70mm',
-      'Blockbuster Grade',
-      'High-separation complementary split grade pushing cool cyan-slate shadows against amber-gold midtones.',
-      (r, g, b) => {
-        const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        const shadowMask = (1 - luma) ** 1.4;
-        const highMask = luma ** 1.3;
-        const rc = sCurve(r, 1.32, 0.015, 0.98) - shadowMask * 0.06 + highMask * 0.055;
-        const gc = sCurve(g, 1.30, 0.025, 0.96) + shadowMask * 0.02 + highMask * 0.015;
-        const bc = sCurve(b, 1.26, 0.05, 0.92) + shadowMask * 0.085 - highMask * 0.065;
-        const [h, s, l] = rgbToHsl(clamp(rc, 0, 1), clamp(gc, 0, 1), clamp(bc, 0, 1));
-        const pushedH = h >= 170 && h <= 265 ? 198 + (h - 198) * 0.55 : h;
-        return hslToRgb(pushedH, clamp(s * 1.18, 0, 1), l);
-      }
-    ),
-    buildLUT(
-      'fuji-eterna-250d',
-      'Fujifilm Eterna 250D Soft',
-      'Documentary & Portrait',
-      'Gentle highlight roll-off, lifted matte shadow floor, pastel aqua skies, and ultra-flattering portrait skin tones.',
-      (r, g, b) => {
-        const rc = sCurve(r, 1.12, 0.055, 0.945) + 0.015;
-        const gc = sCurve(g, 1.14, 0.06, 0.955) + 0.018;
-        const bc = sCurve(b, 1.10, 0.065, 0.94);
-        const [h, s, l] = rgbToHsl(clamp(rc, 0, 1), clamp(gc, 0, 1), clamp(bc, 0, 1));
-        const newH = h >= 190 && h <= 255 ? h - 14 : h >= 85 && h <= 150 ? h + 8 : h;
-        return hslToRgb((newH + 360) % 360, clamp(s * 0.92, 0, 1), l);
-      }
-    ),
-    buildLUT(
-      'silver-bleach-bypass',
-      'EN-R Silver Bleach Bypass',
-      'High-Contrast Gritty',
-      'Retained silver halide emulation with steep micro-contrast, desaturated metallic greens, and steely highlights.',
-      (r, g, b) => {
-        const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        const silverLuma = sCurve(luma, 1.62, 0.01, 0.97);
-        const blend = 0.48;
-        const rc = sCurve(r, 1.45, 0.01, 0.96) * (1 - blend) + silverLuma * blend;
-        const gc = sCurve(g, 1.45, 0.015, 0.96) * (1 - blend) + silverLuma * blend;
-        const bc = sCurve(b, 1.42, 0.02, 0.97) * (1 - blend) + silverLuma * blend * 1.03;
-        return [clamp(rc, 0, 1), clamp(gc, 0, 1), clamp(bc, 0, 1)];
+        const hueShift = h > 80 && h < 160 ? 10 : h < 45 ? -3 : 0;
+        return hslToRgb((h + hueShift + 360) % 360, clamp(s * 1.18, 0, 1), l);
       }
     ),
     buildLUT(
       'arri-logc-rec709-warm',
-      'ARRI Alexa LogC to Golden 709',
-      'Camera Technical + Look',
-      'Naturalistic dynamic range expansion with organic highlight knee compression and golden-hour ambient warmth.',
+      'Arri Alexa LogC to 709',
+      'Camera Look',
+      'Naturalistic ARRI Alexa wide dynamic range expansion with smooth highlight roll-off and neutral-warm balance.',
       (r, g, b) => {
         const rc = sCurve(r, 1.25, 0.02, 0.985) * 1.03;
         const gc = sCurve(g, 1.24, 0.02, 0.975) * 1.01;
         const bc = sCurve(b, 1.22, 0.02, 0.935) * 0.95;
         return [clamp(rc, 0, 1), clamp(gc, 0, 1), clamp(bc, 0, 1)];
+      }
+    ),
+    buildLUT(
+      'fuji-eterna-250d',
+      'FujiFilm Eterna 250D',
+      'Film',
+      'Gentle highlight roll-off, lifted matte shadow floor, pastel aqua skies, and organic documentary warmth.',
+      (r, g, b) => {
+        const rc = sCurve(r, 1.16, 0.045, 0.955) + 0.02;
+        const gc = sCurve(g, 1.15, 0.05, 0.955) + 0.018;
+        const bc = sCurve(b, 1.12, 0.055, 0.935);
+        const [h, s, l] = rgbToHsl(clamp(rc, 0, 1), clamp(gc, 0, 1), clamp(bc, 0, 1));
+        const newH = h >= 190 && h <= 255 ? h - 14 : h >= 85 && h <= 150 ? h + 8 : h;
+        return hslToRgb((newH + 360) % 360, clamp(s * 0.95, 0, 1), l);
+      }
+    ),
+    buildLUT(
+      'blockbuster-teal-orange',
+      'Cinematic Teal & Orange',
+      'Creative',
+      'High-separation complementary split grade pushing cool cyan-teal shadows against glowing amber-gold highlights.',
+      (r, g, b) => {
+        const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        const shadowMask = (1 - luma) ** 1.4;
+        const highMask = luma ** 1.3;
+        const rc = sCurve(r, 1.32, 0.015, 0.98) - shadowMask * 0.06 + highMask * 0.065;
+        const gc = sCurve(g, 1.30, 0.025, 0.96) + shadowMask * 0.025 + highMask * 0.02;
+        const bc = sCurve(b, 1.26, 0.05, 0.92) + shadowMask * 0.09 - highMask * 0.07;
+        const [h, s, l] = rgbToHsl(clamp(rc, 0, 1), clamp(gc, 0, 1), clamp(bc, 0, 1));
+        const pushedH = h >= 170 && h <= 265 ? 196 + (h - 196) * 0.55 : h;
+        return hslToRgb(pushedH, clamp(s * 1.22, 0, 1), l);
+      }
+    ),
+    buildLUT(
+      'kodak-portra-400',
+      'Portra 400',
+      'Film',
+      'Classic Kodak Portra 400 negative stock with warm pastel highlights, luminous skin tones, and airy shadows.',
+      (r, g, b) => {
+        const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        const rc = sCurve(r, 1.18, 0.035, 0.98) + luma * 0.035;
+        const gc = sCurve(g, 1.16, 0.035, 0.97) + luma * 0.015;
+        const bc = sCurve(b, 1.14, 0.04, 0.94) - luma * 0.025;
+        const [h, s, l] = rgbToHsl(clamp(rc, 0, 1), clamp(gc, 0, 1), clamp(bc, 0, 1));
+        return hslToRgb((h + 360) % 360, clamp(s * 1.08, 0, 1), clamp(l * 1.02, 0, 1));
+      }
+    ),
+    buildLUT(
+      'golden-hour-glow',
+      'Golden Hour',
+      'Creative',
+      'Radiant sunset amber warmth, honey-gold midtones, and rich emerald-gold foliage illumination.',
+      (r, g, b) => {
+        const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        const rc = sCurve(r, 1.28, 0.025, 0.99) + 0.055 * (0.4 + 0.6 * luma);
+        const gc = sCurve(g, 1.24, 0.02, 0.96) + 0.025 * luma;
+        const bc = sCurve(b, 1.20, 0.015, 0.88) - 0.05 * luma;
+        const [h, s, l] = rgbToHsl(clamp(rc, 0, 1), clamp(gc, 0, 1), clamp(bc, 0, 1));
+        return hslToRgb(h, clamp(s * 1.24, 0, 1), l);
+      }
+    ),
+    buildLUT(
+      'cinema-contrast-punch',
+      'Cinema Contrast',
+      'Creative',
+      'Deep anamorphic theatrical black floor with punchy midtone separation and crisp highlight definition.',
+      (r, g, b) => {
+        const rc = sCurve(r, 1.52, 0.01, 0.975);
+        const gc = sCurve(g, 1.50, 0.01, 0.97);
+        const bc = sCurve(b, 1.48, 0.015, 0.965);
+        const [h, s, l] = rgbToHsl(clamp(rc, 0, 1), clamp(gc, 0, 1), clamp(bc, 0, 1));
+        return hslToRgb(h, clamp(s * 1.12, 0, 1), l);
+      }
+    ),
+    buildLUT(
+      'bw-film-400',
+      'BW Film 400',
+      'Monochrome',
+      'Panchromatic Tri-X 400 black-and-white silver gelatin curve with rich tonal separation and subtle warm paper tone.',
+      (r, g, b) => {
+        const panLuma = clamp(0.28 * r + 0.62 * g + 0.10 * b, 0, 1);
+        const mono = sCurve(panLuma, 1.44, 0.02, 0.975);
+        return [clamp(mono * 1.01, 0, 1), clamp(mono * 1.005, 0, 1), clamp(mono * 0.985, 0, 1)];
       }
     ),
   ];

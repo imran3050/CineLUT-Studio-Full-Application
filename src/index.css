@@ -10,7 +10,7 @@
 
   body {
     font-family: var(--font-sans);
-    background-color: #090A0F;
+    background-color: #0B0B15;
     color: #F4F4F6;
     -webkit-font-smoothing: antialiased;
   }
@@ -21,3 +21,80 @@
   }
 }
 
+/* Custom CineLUT Studio range sliders with crisp white circular thumbs */
+input[type="range"].cinelut-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 5px;
+  border-radius: 9999px;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type="range"].cinelut-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: #FFFFFF;
+  border: 2px solid #FFFFFF;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.65);
+  cursor: pointer;
+  transition: transform 0.12s ease;
+}
+
+input[type="range"].cinelut-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.12);
+}
+
+input[type="range"].cinelut-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: #FFFFFF;
+  border: 2px solid #FFFFFF;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.65);
+  cursor: pointer;
+}
+
+.track-temp {
+  background: linear-gradient(90deg, #4F46E5 0%, #818CF8 35%, #F59E0B 100%);
+}
+
+.track-tint {
+  background: linear-gradient(90deg, #22C55E 0%, #A855F7 55%, #EC4899 100%);
+}
+
+.track-vibrance {
+  background: linear-gradient(90deg, #4ADE80 0%, #64748B 45%, #F43F5E 100%);
+}
+
+.track-saturation {
+  background: linear-gradient(90deg, #22C55E 0%, #3B82F6 35%, #F59E0B 70%, #EF4444 100%);
+}
+
+.track-tone {
+  background: #383854;
+}
+
+.track-intensity {
+  background: linear-gradient(90deg, #7C3AED 0%, #8B5CF6 65%, #383854 100%);
+}
+
+/* Subtle custom scrollbars for LUT library and filmstrip */
+.cinelut-scroll::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.cinelut-scroll::-webkit-scrollbar-track {
+  background: rgba(18, 18, 33, 0.5);
+  border-radius: 9999px;
+}
+.cinelut-scroll::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.35);
+  border-radius: 9999px;
+}
+.cinelut-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 92, 246, 0.6);
+}

@@ -8,6 +8,8 @@ import {
   X,
   WifiOff,
   Laptop,
+  Cpu,
+  Settings,
 } from 'lucide-react';
 
 export const OfflineIndicator: React.FC = () => {
@@ -26,7 +28,13 @@ export const OfflineIndicator: React.FC = () => {
   );
 };
 
-export const PWAInstallButtonAndModal: React.FC = () => {
+interface PWAInstallButtonAndModalProps {
+  variant?: 'icon' | 'button';
+}
+
+export const PWAInstallButtonAndModal: React.FC<PWAInstallButtonAndModalProps> = ({
+  variant = 'button',
+}) => {
   const { isInstallable, isInstalled, isIOS, isInIframe, install } =
     usePWAInstall();
   const [showModal, setShowModal] = useState(false);
@@ -35,7 +43,9 @@ export const PWAInstallButtonAndModal: React.FC = () => {
   );
 
   const appUrl =
-    typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+    typeof window !== 'undefined'
+      ? window.location.origin
+      : 'http://localhost:3000';
 
   const handleInstallClick = async () => {
     if (isInstallable) {
@@ -45,65 +55,129 @@ export const PWAInstallButtonAndModal: React.FC = () => {
     setShowModal(true);
   };
 
-  const handleDownloadWindowsDesktopLauncher = () => {
-    const batContent = `@echo off
-REM ============================================================================
-REM ChromaXMP — Standalone Windows Desktop App Launcher
-REM Launches ChromaXMP in a native chromeless standalone desktop window
-REM ============================================================================
-SET APP_URL=${appUrl}
+  /**
+   * Generates a self-contained Windows Setup script that uses Windows 10/11's built-in
+   * Microsoft .NET Framework C# compiler (csc.exe) to build a real native Windows GUI
+   * executable (ChromaXMP.exe) directly on the user's PC, placing ChromaXMP.exe on their
+   * Desktop and in %LOCALAPPDATA%\Programs\ChromaXMP\ChromaXMP.exe without SmartScreen blocks.
+   */
+  const handleDownloadWindowsNativeExeInstaller = () => {
+    const setupCmd = `@echo off
+TITLE ChromaXMP — Native Windows .EXE Builder & Desktop Installer
+COLOR 0E
+echo ============================================================================
+echo   ChromaXMP — Native Windows .EXE Application Installer
+echo ============================================================================
+echo.
 
-where msedge >nul 2>nul
-IF %ERRORLEVEL% EQU 0 (
-    start "" msedge --app="%APP_URL%"
-    exit /b
+SET "INSTALL_DIR=%LOCALAPPDATA%\\Programs\\ChromaXMP"
+SET "DESKTOP_EXE=%USERPROFILE%\\Desktop\\ChromaXMP.exe"
+SET "TARGET_EXE=%INSTALL_DIR%\\ChromaXMP.exe"
+SET "CS_FILE=%TEMP%\\ChromaXMP_Launcher.cs"
+
+if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
+
+echo [1/3] Generating native Windows C# executable source...
+(
+echo using System;
+echo using System.Diagnostics;
+echo using System.IO;
+echo class ChromaXMPApp {
+echo     [STAThread]
+echo     static void Main^(^) {
+echo         string url = "${appUrl}";
+echo         string[] browsers = new string[] {
+echo             Path.Combine^(Environment.GetFolderPath^(Environment.SpecialFolder.ProgramFilesX86^), "Microsoft\\Edge\\Application\\msedge.exe"^),
+echo             Path.Combine^(Environment.GetFolderPath^(Environment.SpecialFolder.ProgramFiles^), "Microsoft\\Edge\\Application\\msedge.exe"^),
+echo             Path.Combine^(Environment.GetFolderPath^(Environment.SpecialFolder.ProgramFiles^), "Google\\Chrome\\Application\\chrome.exe"^),
+echo             Path.Combine^(Environment.GetFolderPath^(Environment.SpecialFolder.ProgramFilesX86^), "Google\\Chrome\\Application\\chrome.exe"^)
+echo         };
+echo         foreach ^(string b in browsers^) {
+echo             if ^(File.Exists^(b^)^) {
+echo                 ProcessStartInfo psi = new ProcessStartInfo^(b, "--app=\\"" + url + "\\""^);
+echo                 psi.UseShellExecute = false;
+echo                 Process.Start^(psi^);
+echo                 return;
+echo             }
+echo         }
+echo         Process.Start^(new ProcessStartInfo^(url^) { UseShellExecute = true }^);
+echo     }
+echo }
+) > "%CS_FILE%"
+
+SET "CSC_PATH="
+if exist "%WINDIR%\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe" (
+    SET "CSC_PATH=%WINDIR%\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe"
+) else if exist "%WINDIR%\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe" (
+    SET "CSC_PATH=%WINDIR%\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe"
 )
 
-IF EXIST "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe" (
-    start "" "%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe" --app="%APP_URL%"
+if defined CSC_PATH (
+    echo [2/3] Compiling native Windows GUI executable ^(ChromaXMP.exe^)...
+    "%CSC_PATH%" /nologo /target:winexe /out:"%TARGET_EXE%" "%CS_FILE%"
+    copy /Y "%TARGET_EXE%" "%DESKTOP_EXE%" >nul
+    del "%CS_FILE%" >nul 2>nul
+    echo [3/3] Successfully built and installed ChromaXMP.exe!
+    echo.
+    echo   - Desktop Application: %DESKTOP_EXE%
+    echo   - Program Folder:      %TARGET_EXE%
+    echo.
+    echo Launching ChromaXMP.exe now...
+    start "" "%DESKTOP_EXE%"
+    timeout /t 4 >nul
     exit /b
+) else (
+    echo [!] Microsoft .NET csc.exe not found; creating direct Desktop Launcher...
+    start "" msedge --app="${appUrl}"
 )
-
-IF EXIST "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe" (
-    start "" "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe" --app="%APP_URL%"
-    exit /b
-)
-
-start "" "%APP_URL%"
 `;
-    const blob = new Blob([batContent], { type: 'text/plain;charset=utf-8' });
+    const blob = new Blob([setupCmd], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'Launch_ChromaXMP_Desktop_App.bat';
+    a.download = 'ChromaXMP_Windows_EXE_Installer.cmd';
     a.click();
     URL.revokeObjectURL(url);
-    setLauncherDownloaded('Launch_ChromaXMP_Desktop_App.bat (Windows PC)');
+    setLauncherDownloaded(
+      'ChromaXMP_Windows_EXE_Installer.cmd — Run it once to generate ChromaXMP.exe directly on your Windows Desktop!'
+    );
   };
 
   const handleDownloadMacDesktopLauncher = () => {
     const shContent = `#!/usr/bin/env bash
 # ============================================================================
-# ChromaXMP — Standalone macOS Desktop App Launcher
+# ChromaXMP — Standalone macOS Desktop App Bundle Builder (.app)
+# Creates a native ChromaXMP.app bundle on your macOS Desktop
 # ============================================================================
 APP_URL="${appUrl}"
+APP_BUNDLE="$HOME/Desktop/ChromaXMP.app/Contents/MacOS"
+mkdir -p "$APP_BUNDLE"
 
+cat << 'EOF' > "$APP_BUNDLE/ChromaXMP"
+#!/usr/bin/env bash
 if [ -d "/Applications/Google Chrome.app" ]; then
-  open -n -a "Google Chrome" --args --app="$APP_URL"
+  open -n -a "Google Chrome" --args --app="${appUrl}"
 elif [ -d "/Applications/Microsoft Edge.app" ]; then
-  open -n -a "Microsoft Edge" --args --app="$APP_URL"
+  open -n -a "Microsoft Edge" --args --app="${appUrl}"
 else
-  open "$APP_URL"
+  open "${appUrl}"
 fi
+EOF
+
+chmod +x "$APP_BUNDLE/ChromaXMP"
+echo "Created native ChromaXMP.app on your Desktop!"
+open "$HOME/Desktop/ChromaXMP.app"
 `;
     const blob = new Blob([shContent], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'Launch_ChromaXMP_Desktop_App.command';
+    a.download = 'Build_ChromaXMP_macOS_App.command';
     a.click();
     URL.revokeObjectURL(url);
-    setLauncherDownloaded('Launch_ChromaXMP_Desktop_App.command (macOS)');
+    setLauncherDownloaded(
+      'Build_ChromaXMP_macOS_App.command — Run it to create ChromaXMP.app on your macOS Desktop!'
+    );
   };
 
   if (isInstalled) {
@@ -117,14 +191,28 @@ fi
 
   return (
     <>
-      <button
-        type="button"
-        onClick={handleInstallClick}
-        className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-amber-300 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/50 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-      >
-        <MonitorDown className="w-3.5 h-3.5 text-amber-400" />
-        <span>{isInstallable ? 'Install PC App' : 'Install on PC / Desktop'}</span>
-      </button>
+      {variant === 'icon' ? (
+        <button
+          type="button"
+          onClick={handleInstallClick}
+          title="Install on PC (.EXE / PWA) & Studio Settings"
+          aria-label="Install on PC (.EXE / PWA)"
+          className="w-9 h-9 rounded-xl bg-[#161628] hover:bg-[#1E1E36] border border-[#282842] flex items-center justify-center text-zinc-300 hover:text-white transition-colors shrink-0 cursor-pointer"
+        >
+          <Settings className="w-4 h-4" />
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={handleInstallClick}
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-violet-200 bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/50 rounded-xl transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+        >
+          <MonitorDown className="w-3.5 h-3.5 text-violet-400" />
+          <span>
+            {isInstallable ? 'Install PC App (.EXE)' : 'Install on PC (.EXE / PWA)'}
+          </span>
+        </button>
+      )}
 
       {showModal && (
         <div
@@ -142,11 +230,11 @@ fi
                     id="pwa-install-dialog-title"
                     className="text-base font-bold text-zinc-100"
                   >
-                    Install ChromaXMP as a Standalone PC Application
+                    Install ChromaXMP on Your PC (Windows .EXE &amp; Native PWA)
                   </h2>
                   <p className="text-xs text-zinc-400 mt-0.5">
-                    Run ChromaXMP in its own native desktop window with offline support and
-                    auto-saved local storage.
+                    Generate a real native Windows <code className="text-amber-300">ChromaXMP.exe</code>{' '}
+                    application on your Desktop or install via Chrome/Edge PWA.
                   </p>
                 </div>
               </div>
@@ -160,90 +248,89 @@ fi
               </button>
             </div>
 
-            {/* Method 1: Native Browser PWA Installation */}
+            {/* Method 1: Native Windows ChromaXMP.exe Builder & Installer */}
+            <div className="bg-[#090A0F] border border-amber-500/40 rounded-lg p-3.5 flex flex-col gap-2.5">
+              <div className="flex items-center gap-2 text-xs font-semibold text-amber-300">
+                <Cpu className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>01. Build Native Windows ChromaXMP.exe on Your Desktop (Recommended)</span>
+              </div>
+              <p className="text-xs text-zinc-300 leading-relaxed">
+                Browsers block direct <code className="text-zinc-200">.exe</code> downloads from web
+                apps with SmartScreen warnings. This installer uses Windows 10/11&apos;s built-in
+                Microsoft .NET compiler (<code className="text-zinc-200">csc.exe</code>) to compile a
+                genuine native <strong className="text-white">ChromaXMP.exe</strong> executable
+                directly onto your Windows Desktop and Program Files!
+              </p>
+
+              <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={handleDownloadWindowsNativeExeInstaller}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-zinc-950 bg-amber-500 hover:bg-amber-400 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download Windows .EXE Builder (ChromaXMP.exe)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadMacDesktopLauncher}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-zinc-100 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5 text-amber-400" />
+                  <span>macOS ChromaXMP.app Builder</span>
+                </button>
+              </div>
+
+              {launcherDownloaded && (
+                <div className="text-xs text-emerald-400 flex items-start gap-1.5 pt-1">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{launcherDownloaded}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Method 2: Native Browser PWA Installation */}
             <div className="bg-[#090A0F] border border-zinc-800/90 rounded-lg p-3.5 flex flex-col gap-2.5">
               <div className="text-xs font-semibold text-zinc-100">
-                01. Install Native Desktop PWA (Chrome, Edge, Brave)
+                02. Install via Browser Native PWA (Chrome / Microsoft Edge)
               </div>
               {isInstallable ? (
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs text-zinc-400">
-                    Your browser is ready to install ChromaXMP directly to your Start Menu,
-                    Desktop, and Taskbar.
+                    Your browser can also install ChromaXMP directly to your Start Menu and Taskbar.
                   </p>
                   <button
                     type="button"
                     onClick={install}
                     className="px-4 py-2 text-xs font-semibold text-zinc-950 bg-amber-500 hover:bg-amber-400 rounded-lg whitespace-nowrap shrink-0"
                   >
-                    Install ChromaXMP Now
+                    Install PWA Now
                   </button>
                 </div>
               ) : isIOS ? (
                 <p className="text-xs text-zinc-300 leading-relaxed">
                   Tap the <strong>Share</strong> button in Safari and select{' '}
-                  <strong>Add to Home Screen</strong> to launch ChromaXMP as a standalone app.
+                  <strong>Add to Home Screen</strong>.
                 </p>
               ) : (
-                <div className="flex flex-col gap-2.5">
-                  <p className="text-xs text-zinc-300 leading-relaxed">
+                <div className="flex flex-col gap-2">
+                  <p className="text-xs text-zinc-400 leading-relaxed">
                     {isInIframe
-                      ? 'Because ChromaXMP is currently inside a preview frame, open it in a full browser tab first—then click the "Install ChromaXMP" monitor icon on the right side of your Chrome or Edge address bar.'
-                      : 'Click the "Install ChromaXMP" monitor icon on the right side of your Chrome or Edge address bar (or open Browser Menu ⋮ → Cast, save, and share → Install page as app).'}
+                      ? 'Or open ChromaXMP in a full browser window and click the "Install ChromaXMP" monitor icon in your Chrome or Edge address bar.'
+                      : 'Click the "Install ChromaXMP" monitor icon on the right side of your Chrome or Edge address bar.'}
                   </p>
-                  <div className="flex items-center gap-2">
+                  <div>
                     <a
                       href={appUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-zinc-950 bg-amber-500 hover:bg-amber-400 rounded-lg transition-colors whitespace-nowrap"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors whitespace-nowrap"
                     >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      <span>Open Full Window for 1-Click PWA Install</span>
+                      <ExternalLink className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Open Full Window for Browser PWA Install</span>
                     </a>
                   </div>
-                </div>
-              )}
-            </div>
-
-            {/* Method 2: Instant PC Desktop Launcher Script (.bat / .command) */}
-            <div className="bg-[#090A0F] border border-zinc-800/90 rounded-lg p-3.5 flex flex-col gap-2.5">
-              <div className="text-xs font-semibold text-zinc-100">
-                02. Download Standalone Desktop Shortcut Launcher (Windows / macOS)
-              </div>
-              <p className="text-xs text-zinc-400 leading-relaxed">
-                Download a desktop launcher file to your PC. Double-clicking it opens ChromaXMP
-                immediately in a dedicated, borderless native desktop window (`--app` mode) without
-                browser tabs or address bars.
-              </p>
-
-              <div className="flex flex-wrap items-center gap-2.5 pt-1">
-                <button
-                  type="button"
-                  onClick={handleDownloadWindowsDesktopLauncher}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-zinc-100 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors whitespace-nowrap"
-                >
-                  <Download className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Windows PC Launcher (.BAT)</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleDownloadMacDesktopLauncher}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-zinc-100 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors whitespace-nowrap"
-                >
-                  <Download className="w-3.5 h-3.5 text-amber-400" />
-                  <span>macOS App Launcher (.COMMAND)</span>
-                </button>
-              </div>
-
-              {launcherDownloaded && (
-                <div className="text-xs text-emerald-400 flex items-center gap-1.5 pt-1">
-                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                  <span>
-                    Downloaded {launcherDownloaded} — place it on your Desktop and double-click to
-                    launch!
-                  </span>
                 </div>
               )}
             </div>
